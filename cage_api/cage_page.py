@@ -1,4 +1,4 @@
-# Cage® class v. 2.6 (Cage file server v.3.0)
+# Cage® class v. 2.7 (Cage file server v.3.0)
 # functions for methods:
 #   get_p, put_p, mod_p,
 #   push_all (push_p), refresh (reload_p)
@@ -12,8 +12,8 @@ import queue
 
 import zmq
 
-from .cage_par_cl import *
-from .cage_err import *
+from cage_par_cl import *
+from cage_err import *
 
 Mod_name = "*" + __name__
 
@@ -44,7 +44,18 @@ def get_p(self, fchannel, fpage, Kerr):
 
     # convert cage instance channel number to server channel number
     server = self.cage_ch[fchannel][0]
-    nf_serv = self.cage_ch[fchannel][1]
+    if WRITE_THREAD:
+        thread_socket= self.clients[server][2]
+    else:
+        thread_socket= None
+
+    """
+    if WRITE_THREAD:
+        nf_serv_for_read = self.cage_ch[fchannel+1][1]
+    else:
+    """
+    nf_serv_for_read = self.cage_ch[fchannel][1]
+
     nusf = fpage
 
     # print( 'get_p 1 ==========  self.client_id  fchannel > ',self.client_id, fchannel)
@@ -87,17 +98,17 @@ def get_p(self, fchannel, fpage, Kerr):
                 min1 = self.binout[page]["kobs"]
                 nmin1 = page
 
-    if WRITE_THREAD:
+    if WRITE_THREAD and  thread_socket != False:
         # pr(  "*** Get_P   *** 02")
         self.lock_memory.acquire()
         # pr(  "*** Get_P   *** 02-x")
     if zero_page1 == -1 and min1 > 1000:  #  normalize request counters
         for page in range(self.numpages):
             self.binout[page]["kobs"] -= min1 - 1
-    if WRITE_THREAD:
+    if WRITE_THREAD  and  thread_socket != False:
         self.lock_memory.release()
 
-    if WRITE_THREAD:
+    if WRITE_THREAD  and  thread_socket != False:
     # ------------------------------------ write thread ----------------------------------------------------
 
 
@@ -336,6 +347,14 @@ def get_p(self, fchannel, fpage, Kerr):
 
                 if not self.join(request_1, server, Kerr):
                     # error during uploading
+                    set_err_int(
+                        Kerr,
+                        Mod_name,
+                        "get_p " + self.cage_name,
+                        15,
+                        message='Error from JOIN during uploading.'
+                        % (server, str(err)),
+                    )
                     return -1  # getpage failed
 
                 self.kwyg += 1  # statistics
@@ -374,7 +393,7 @@ def get_p(self, fchannel, fpage, Kerr):
     request_2 = (
         "r",
         self.client_id,
-        nf_serv,
+        nf_serv_for_read,
         (smstr, self.pagesize),
         None,
         self.req_id,
@@ -445,7 +464,7 @@ def get_p(self, fchannel, fpage, Kerr):
                     "get_p " + self.cage_name,
                     18,
                     message='Server "%s" return error in request =%s ' \
-                        % ( server, str(request_2.decode("utf-8", errors="backslashreplace")))
+                        % ( server, str(request_2))
                 )
                 return -1
             else:
@@ -524,7 +543,7 @@ def get_p(self, fchannel, fpage, Kerr):
                     "get_p " + self.cage_name,
                     24,
                     message='Server "%s" return error for read data. request = %s' \
-                        % (server, str(request_2.decode("utf-8", errors="backslashreplace")) )
+                        % (server, str(request_2) )
                 )
                 return -1
             elif err == b"\x0F" * 4:
@@ -538,7 +557,7 @@ def get_p(self, fchannel, fpage, Kerr):
                     25,
                     message='Server "%s" return unexpected answer = %s. request = %s '\
                     % (server, err_or_data.decode("utf-8", errors="backslashreplace"), 
-                          str(request_2.decode("utf-8", errors="backslashreplace")) ),
+                          str(request_2) ),
                 )
                 return -1
     if event == -1:
@@ -566,7 +585,7 @@ def get_p(self, fchannel, fpage, Kerr):
     # print ("  type( self.masstr[page_update]) - " , type( self.masstr[page_update]) )
 
     # make page descriptor
-    if WRITE_THREAD:
+    if WRITE_THREAD  and  thread_socket != False:
         # pr(  "*** Get_P   *** 06")
         self.lock_memory.acquire()
         # pr(  "*** Get_P   *** 06-x")
@@ -580,10 +599,10 @@ def get_p(self, fchannel, fpage, Kerr):
     if len(self.hash2nat) <= self.numpages:
         self.hash2nat[(nusf, fchannel)] = page_update
 
-    if WRITE_THREAD:
+    if WRITE_THREAD  and  thread_socket != False:
         self.lock_memory.release()
 
-    if WRITE_THREAD:
+    if WRITE_THREAD  and  thread_socket != False:
 
         page_upload = -1
         while push_thread:

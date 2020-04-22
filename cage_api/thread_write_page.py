@@ -9,8 +9,8 @@ import queue
 
 import zmq
 
-from .cage_par_cl import *
-from .cage_err import *
+from cage_par_cl import *
+from cage_err import *
 
 Mod_name = "*" + __name__
 
@@ -79,7 +79,7 @@ def page_write(
             lock_write.release()
             sys.exit()
 
-        time.sleep(0.00001)
+        time.sleep(0.000001)
         #pr(  "12 Page_write   *** Cage  %s :  Page_write got page number # %d  (req_id_thread = %d) "  %  (cage_name, page, req_id_thread) )
         if page == -1:
             #pr( "13 Page_write   *** Cage  %s :  Pages write thread STOPPED normally."  \
@@ -99,8 +99,8 @@ def page_write(
             request = ("w", client_id, nf_serv, (smstr, -1), "", req_id_thread)
 
             req = pickle.dumps(request)
-
-            # time.sleep(0.01)                                          ###################
+            #fou=pickle.loads(req)
+            time.sleep(0.000001)                                         
             try:
                 #pr(  "*** Page_write   *** 02")
                 clients[server][2].send(req)
@@ -138,6 +138,7 @@ def page_write(
                     answer = clients[server][2].recv()
                     if answer == b"\xFF" * 4:
                         # resend
+                        time.sleep(1)
                         try:
                             #pr(  "*** Page_write   *** 04")
                             clients[server][2].send(req)
@@ -230,6 +231,7 @@ def page_write(
                 len_id_byte = struct.pack(">L", len(id_byte))
                 id_block = len_id_byte + id_byte
                 clients[server][2].send(b"\x0F" * 4 + id_block + masstr[page])
+                #pr("*** Page_length = %s  *** "% str( len(masstr[page]) ) )
             except zmq.ZMQError as err:
                 set_err_int(
                     Kerr,
@@ -259,11 +261,13 @@ def page_write(
                     answer = clients[server][2].recv()
 
                     if answer == b"\xFF" * 4:
+                        time.sleep(1)
                         resend = pickle.dumps(request)
                         clients[server][2].send(resend)
                         continue
 
                     if answer[:4] == b"\x00" * 4:
+                        time.sleep(1)
                         respond = pickle.loads(answer[4:])
                         kerr = pickle.loads(respond[4])
                         serv = kerr[0]
@@ -289,8 +293,9 @@ def page_write(
                     try:
                         respond = pickle.loads(answer)
                     except pickle.UnpicklingError:
-                        pr("\n JOIN_******* UnpicklingError ")
+                        pr("\n THREAD WRITE ******* UnpicklingError ")
                         #lock_write.release()
+                        time.sleep(1)
                         sys.exit()
 
                     #pr('\n JOIN_thread respond <<< ' + str(respond)+'\n' )                                                ###

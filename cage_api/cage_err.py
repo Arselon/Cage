@@ -9,6 +9,8 @@ import datetime
 import time
 import threading
 
+from cage_par_cl import *
+
 Log_err = "cage_error.log"  # default errlog file
 
 Log_print = "cage_print.txt"  # file for copying/redirecting system
@@ -47,8 +49,10 @@ class Logger(object):
         if self.term:
             self.terminal.write(message)
         self.log.write(message)
-        # self.log.flush()
+        self.log.flush()
 
+    def flush(self):
+        pass
 
 # -----------------------------------------------------
 
@@ -100,12 +104,12 @@ def pr(
     message="",
     func="",  # name of function or class method
     proc_inf=False,  # show process and treads info
-    cage_debug=False,
+    cage_debug=CAGE_DEBUG,
     wait=0.00001,  # timeout for comfort in parallel environment
     tim=False,
 ):
 
-    if cage_debug or __debug__:
+    if cage_debug :
 
         time.sleep(wait)
         dt = datetime.datetime.now().strftime("%d.%m.%y  %H:%M:%S .%f")
@@ -199,11 +203,11 @@ def set_warn_int(
                 dt,
             )
         )
-
-    errlog.write("\n" + dt + " -!- program warning -!- ")
-    errlog.write("\n" + "          Kerr = " + str(Kerr))
-    if message != "":
-        errlog.write("\n >>> " + str(message))
+    if CAGE_DEBUG:
+        errlog.write("\n" + dt + " -!- program warning -!- ")
+        errlog.write("\n" + "          Kerr = " + str(Kerr))
+        if message != "":
+            errlog.write("\n >>> " + str(message))
 
     if cage_debug and __debug__:
 

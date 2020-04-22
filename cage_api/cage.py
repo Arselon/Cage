@@ -1,4 +1,4 @@
-﻿# Cage® class v. 2.6 (Cage file server v.3.1)
+﻿# Cage® class v. 2.7 (Cage file server v.3.1)
 # © A.S.Aliev, 2019
 
 
@@ -8,17 +8,19 @@ import threading
 import queue
 
 import zmq
+import jwt
 
-from .cage_par_cl import *
-from .cage_err import *
+from cage_par_cl import *
+from cage_err import *
 
-from .cage_page import *
-from .cage_channel import *
-from .thread_write_page import *
+from cage_page import *
+from cage_channel import *
+from thread_write_page import *
 
 Mod_name = "*" + __name__
 
 # ---------------------------------------------
+
 
 
 class Cage:
@@ -36,6 +38,7 @@ class Cage:
         cache_file=CACHE_FILE,
     ):
 
+        global WRITE_THREAD
         self.awake = awake
         self.cache_file = cache_file
         self.pagesize = int(pagesize)
@@ -135,18 +138,58 @@ class Cage:
 
             self.req_id = 0  # number of last request to servers (common for all)
 
-            if WRITE_THREAD:
-                self.req_id_thread = 0   # number of last request to servers for write thread
-            else:
-                 self.req_id_thread = None
-
             if self.cage_name == "":
                 self.client_id = str(self.obj_id) + str(
                     self.pr_create
                 )  # secure id. for access to servers from
                 # cage instance
             else:
-                self.client_id = self.cage_name
+                self.client_id = self.cage_name            
+
+            cage_id_and_JWT = self.client_id.encode('utf-8')
+            pos_splitter=cage_id_and_JWT.find( SPLITTER)
+            jwtoken= None
+
+            self.payload={}
+
+            """ 
+                        cl_name=  payload [ 'name']
+                        cl_surname= payload [ 'surname'] 
+                        cl_email= payload [ 'email']
+                        token_datetime= payload [ 'iat'] 
+                        cl_permission= payload [ 'permission']
+                        token_issuer=payload [ 'iss'] 
+            """
+
+            if pos_splitter > -1 and len(cage_id_and_JWT) > pos_splitter +4:
+                jwtoken = cage_id_and_JWT[ (pos_splitter+4): ].decode('utf-8')
+                try:
+                    self.payload = jwt.decode(jwtoken, algorithm='HS256', verify=False)
+                except InvalidTokenError as err:
+                    raise CageERR(
+                        "03 CageERR   Cage name contains invalid JW token, error: %s" % err
+                    )
+                if pos_splitter == 0:
+                    self.cage_id= jwtoken.decode('utf-8')
+                else:
+                    self.cage_id= cage_id_and_JWT[ : pos_splitter].decode('utf-8')
+
+                if  'permission' not in  self.payload  or \
+                    self.payload['permission'] not in ('low', 'standard', 'high',  'admin'):
+                        raise CageERR(
+                            "04 CageERR   Payload in JW token invalid."
+                        )                    
+            else:
+                self.cage_id=  self.client_id
+                self.payload = {'JWT': None, 'permission' : 'low'}
+
+            if self.payload['permission'] == 'low' :
+                WRITE_THREAD = False
+
+            if WRITE_THREAD :
+                self.req_id_thread = 0   # number of last request to servers for write thread
+            else:
+                 self.req_id_thread = None
 
         cerr = False
         try:
@@ -155,17 +198,17 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "__init__ " + self.cage_name,
+                "__init__ " + self.cage_id,
                 3,
                 message="ZMQ context NOT started with error: %s" % err
-                + '\n and Cage "%s" NOT created' % self.cage_name,
+                + '\n and Cage "%s" NOT created' % self.cage_id,
             )
             cerr = True
         if cerr:
             cerr = False
             raise CageERR(
-                "03 CageERR   ZMQ context NOT started with error: %s" % err
-                + '\n and Cage "%s" NOT created' % self.cage_name
+                "05 CageERR   ZMQ context NOT started with error: %s" % err
+                + '\n and Cage "%s" NOT created' % self.cage_id
             )
 
         self.context.setsockopt(zmq.LINGER, 0)
@@ -174,17 +217,17 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "__init__ " + self.cage_name,
+                "__init__ " + self.cage_id,
                 4,
                 message='No ZMQ connections established and Cage "%s" NOT created.'
-                % self.cage_name,
+                % self.cage_id,
             )
             raise CageERR(
-                '04 CageERR   No ZMQ connections established and Cage "%s" NOT created.'
-                % self.cage_name
+                '06 CageERR   No ZMQ connections established and Cage "%s" NOT created.'
+                % self.cage_id
             )
 
-        if WRITE_THREAD:
+        if WRITE_THREAD :
 
             self.Pages_to_write = queue.Queue()
             self.Pages_clean = queue.Queue()
@@ -199,17 +242,17 @@ class Cage:
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "__init__ " + self.cage_name,
+                    "__init__ " + self.cage_id,
                     3,
                     message="ZMQ context_thread NOT started with error: %s" % err
-                    + '\n and Cage "%s" NOT created' % self.cage_name,
+                    + '\n and Cage "%s" NOT created' % self.cage_id,
                 )
                 cerr = True
             if cerr:
                 cerr = False
                 raise CageERR(
-                    "03 CageERR   ZMQ context_thread NOT started with error: %s" % err
-                    + '\n and Cage "%s" NOT created' % self.cage_name
+                    "07 CageERR   ZMQ context_thread NOT started with error: %s" % err
+                    + '\n and Cage "%s" NOT created' % self.cage_id
                 )
 
             self.context_thread.setsockopt(zmq.LINGER, 0)
@@ -218,17 +261,18 @@ class Cage:
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "__init__ " + self.cage_name,
+                    "__init__ " + self.cage_id,
                     4,
                     message='No ZMQ thread connections established and Cage "%s" NOT created.'
-                    % self.cage_name,
+                    % self.cage_id,
                 )
                 raise CageERR(
-                    '04 CageERR   No ZMQ thread connections established and Cage "%s" NOT created.'
-                    % self.cage_name
+                    '08 CageERR   No ZMQ thread connections established and Cage "%s" NOT created.'
+                    % self.cage_id
                 )
         #
         if self.awake:
+
             problem_serv = self.wakeup2(Kerr)
             # pr(' problem_serv='+str( problem_serv))
             if problem_serv == True:
@@ -237,28 +281,28 @@ class Cage:
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "__init__ " + self.cage_name,
+                    "__init__ " + self.cage_id,
                     5,
                     message="Error reopening mandatory channel %d ( %s ) on server %s when wake up."
                     % problem_serv
-                    + '\n and Cage "%s" NOT created' % self.cage_name,
+                    + '\n and Cage "%s" NOT created' % self.cage_id,
                 )
                 raise CageERR(
-                    "05 CageERR   Error reopening mandatory channel %d ( %s ) on server %s when wake up."
+                    "09 CageERR   Error reopening mandatory channel %d ( %s ) on server %s when wake up."
                     % problem_serv
-                    + '\n and Cage "%s" NOT created' % self.cage_name
+                    + '\n and Cage "%s" NOT created' % self.cage_id
                 )
             pr(
-                '  Cage "%s" WOKE UP for client_id = %s'
-                % (self.cage_name, self.client_id)
+                '  Cage "%s" WOKE UP'
+                % (self.cage_id,)
             )
         else:
             pr(
-                'Cage "%s" CREATED with client_id = %s'
-                % (self.cage_name, self.client_id)
+                ' Cage "%s" CREATED'
+                % (self.cage_id,)
             )
 
-        if WRITE_THREAD:
+        if WRITE_THREAD :
 
             # start write page thread
 
@@ -298,8 +342,6 @@ class Cage:
     # open clients ZeroMQ sockets for specified servers
     def bind(self, zmq_context, Kerr):
 
-        suc_conn = False
-
         for serv in self.server_ip:
 
             if serv in self.set_act_serv:
@@ -313,51 +355,165 @@ class Cage:
 
             # 1 step connect with common port of server
 
-            if not WRITE_THREAD:
+            if not  WRITE_THREAD  :
                 self.clients[serv] = [False, False]
             else:
                 self.clients[serv] = [False, False, False]
 
             common_sock = zmq_context.socket(zmq.REQ)
+
             for at1 in range(ATTEMPTS_CONNECT):
+
                 try:
                     common_sock.connect("tcp://%s:%s" % (host, common_port))
                     # socket REQ type
                 except zmq.ZMQError as err:
                     pr(
                         'Cage "%s". Common socket server %s (%s : %s) '
-                        % (self.cage_name, serv, host, common_port)
+                        % (self.cage_id, serv, host, common_port)
                         + "\n temporarily not connected with ZMQ error: %s . Waiting ..."
                         % err
                     )
                     Error = str(err)
                     time.sleep(ATTEMPT_TIMEOUT)
                     continue
+
                 else:
-                    if not WRITE_THREAD:
+                    if not WRITE_THREAD :
                         self.clients[serv] = [common_sock, False]
                     else:
-                        self.clients[serv] = [common_sock, False, False]
-
+                        self.clients[serv] = [common_sock, False, False]       
                     pr(
                         'Cage "%s". Common socket for communication with server %s (%s : %s) READY.'
-                        % (self.cage_name, serv, host, common_port)
+                         % (self.cage_id, serv, host, common_port)
                     )
                     break
 
             if self.clients[serv][0] == False:
                 common_sock.close()
+
                 if mandatory_connection:
                     set_err_int(
                         Kerr,
                         Mod_name,
-                        "bind " + self.cage_name,
+                        "bind " + self.cage_id,
                         1,
                         message='Cage "%s". Common socket server %s (%s : %s) '
-                        % (self.cage_name, serv, host, common_port)
-                        + "\n NOT connected with ZMQ error: %s . Connection with it failed."
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n NOT connected with ZMQ error: %s . Connection with server failed."
                         % Error
                         + "\n Connection has mandatory status, therefore Cage can not be created",
+                    )
+                    del self.clients
+                    return False    
+                else:
+                    set_err_int(
+                        Kerr,
+                        Mod_name,
+                        "bind " + self.cage_id,
+                        2,
+                        message='Cage "%s". Common socket server %s (%s : %s) '
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n NOT connected with ZMQ error: %s . Connection with server failed."
+                        % Error
+                    )
+                    del self.clients[serv]
+                    continue
+
+            # 2 step connect with temp port of server - for i/o server messaging
+
+            self.req_id += 1
+            first_request = pickle.dumps((self.client_id, "connect", self.req_id))
+            # pr ( 'client %s, first_request = %s '% (cl_name, str (pickle.loads ( first_request) ) ) )
+
+            for at2 in range(ATTEMPTS_WAIT_RESPONSE):
+
+                try:
+                    self.clients[serv][0].send(first_request, zmq.DONTWAIT)
+
+                except zmq.ZMQError as err:
+                        # send() in non-blocking mode, it raises zmq.error.Again < if err.errno == zmq.EAGAIN: > to inform you,
+                        # that there's nothing that could be done with the message and you should try again later.
+                    pr(
+                        'Cage "%s". First request to server %s (%s : %s) '
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n failed. Waiting to resend ..."
+                    )
+                    time.sleep(RESPONSE_TIMEOUT)
+                    continue
+
+                else:
+                    # get client port for file processing
+                    try:
+                        event = self.clients[serv][0].poll(timeout=WAIT_RESPONSE *ATTEMPTS_WAIT_RESPONSE)
+
+                    except zmq.ZMQError:
+                        pr(
+                            'Cage "%s". First response from server %s (%s : %s) '
+                            % (self.cage_id, serv, host, common_port)
+                            + "\n  not recieved. Fail server connection ..."
+                        )
+                        break
+
+                    else:
+                        first_response = pickle.loads(self.clients[serv][0].recv())
+                        # pr ( 'client %s, first_response = %s'% (cl_name, str(first_response) ) )     
+                        if first_response[0] != self.client_id or first_response[2] != self.req_id:
+                            pr(
+                                'Cage "%s". First response from server %s (%s : %s) '
+                                % (self.cage_id, serv, host, common_port)
+                                + "\n  invalid. Program error. Fail server connection ..."
+                            )
+                            break
+
+                        status = first_response[3]
+
+                        if status == "connected":
+                    
+                            port_client = str(first_response[1])
+
+                            try:
+                                temp_client = zmq_context.socket(zmq.REQ)
+                                temp_client.connect("tcp://%s:%s" % (host, port_client))
+                            except zmq.ZMQError as err:
+                                pr(
+                                    'Cage "%s". Client\'s socket server %s (%s : %s) '
+                                    % (self.cage_id, serv, host, port_client)
+                                    + " not connected with client port. ZMQ error: %s . Waiting ..."
+                                     % err
+                                )
+                                time.sleep(WAIT_RESPONSE)
+                                continue
+
+                            else:
+                                self.clients[serv][1] = temp_client
+                                pr(
+                                    'Cage "%s". Client\'s socket server %s (%s : %s)'
+                                    % (self.cage_id, serv, host, port_client)
+                                    +  ' CONNECTED to temporary client\'s port for files operations.'
+                                )
+                                break                     
+                        else:
+                            pr(
+                                'Cage "%s". Client\'s socket server %s (%s : %s ) '
+                                    % (self.cage_id, serv, host, '*undefined*')
+                                    + "with port for files operations NOT connected. Waiting ..."
+                            )
+                            time.sleep(WAIT_RESPONSE)
+                continue                             
+
+            if  self.clients[serv][1] == False:
+                common_sock.close()
+                if mandatory_connection:
+                    set_err_int(
+                        Kerr,
+                        Mod_name,
+                        "bind " + self.cage_id,
+                        4,
+                        message='Cage "%s". Server %s (%s : %s) '
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n NOT connected with port. Failed server"
+                        + "\n has mandatory status, therefore Cage can not be created",
                     )
                     del self.clients
                     return False
@@ -365,134 +521,25 @@ class Cage:
                     set_err_int(
                         Kerr,
                         Mod_name,
-                        "bind " + self.cage_name,
-                        2,
-                        message='Cage "%s". Common socket server %s (%s : %s) '
-                        % (self.cage_name, serv, host, common_port)
-                        + "\n NOT connected with ZMQ error: %s . Connection with it failed."
-                        % Error,
+                        "bind " + self.cage_id,
+                        5,
+                        message='Cage "%s". Server %s (%s : %s) '
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n NOT connected during port error."
                     )
                     del self.clients[serv]
-                    continue
 
-            # 2 step connect with temp port of server - for i/o server messaging
-            self.req_id += 1
-            first_request = pickle.dumps((self.client_id, "connect", self.req_id))
-            # pr ( 'client %s, first_request = %s '% (cl_name, str (pickle.loads ( first_request) ) ) )
-            try:
-                self.clients[serv][0].send(first_request, zmq.DONTWAIT)
-            except zmq.ZMQError as err:
-                # send() in non-blocking mode, it raises zmq.error.Again < if err.errno == zmq.EAGAIN: > to inform you,
-                # that there's nothing that could be done with the message and you should try again later.
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind " + self.cage_name,
-                    3,
-                    message='Cage "%s". Error during sendind first request to server %s (%s : %s ).'
-                    % (self.cage_name, serv, host, common_port)
-                    + "\n Connection with it failed.",
-                )
-                del self.clients[serv]
-                continue
+            continue
 
-            first_response = ""
-            for at2 in range(ATTEMPTS_CONNECT):
-                # get client port for file processing
-                try:
-                    event = self.clients[serv][0].poll(timeout=RESPONSE_TIMEOUT)
-                except zmq.ZMQError:
-                    pr(
-                        'Cage "%s". Fist response from server %s (%s : %s) '
-                        % (self.cage_name, serv, host, common_port)
-                        + "\n temporarily not recieved. Waiting ..."
-                    )
-                    time.sleep(self.wait)
-                else:
-                    first_response = pickle.loads(self.clients[serv][0].recv())
-                    # pr ( 'client %s, first_response = %s'% (cl_name, str(first_response) ) )
-                    break
-                time.sleep(self.wait)
-
-            if first_response == "":
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind " + self.cage_name,
-                    4,
-                    message='Cage "%s". First response from server %s (%s : %s) '
-                    % (self.cage_name, serv, host, common_port)
-                    + "\n not recieved. Connection with it failed.",
-                )
-                del self.clients[serv]
-                continue
-
-            if first_response[0] != self.client_id or first_response[2] != self.req_id:
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind " + self.cage_name,
-                    5,
-                    message='Cage "%s". First response from server %s (%s : %s) was with error'
-                    % (self.cage_name, serv, host, common_port)
-                    + "\n Connection with it failed.",
-                )
-                del self.clients[serv]
-                continue
-
-            status = first_response[3]
-            if status == "busy":
-                del self.clients[serv]
-                continue
-
-            elif status == "connected":
-                port_client = str(first_response[1])
-                temp_endpoint = "tcp://" + host + ":" + port_client
-                for at3 in range(ATTEMPTS_CONNECT):
-                    try:
-                        temp_client = zmq_context.socket(zmq.REQ)
-                        temp_client.connect("tcp://%s:%s" % (host, port_client))
-                    except zmq.ZMQError as err:
-                        pr(
-                            'Cage "%s". Client\'s socket server %s (%s : %s) '
-                            % (self.cage_name, serv, host, port_client)
-                            + "\n temporarily not connected with ZMQ error: %s . Waiting ..."
-                            % err
-                        )
-                        time.sleep(ATTEMPT_TIMEOUT)
-                        continue
-                    else:
-                        self.clients[serv][1] = temp_client
-                        suc_conn = True
-                        pr(
-                            'Cage "%s". Client\'s socket server %s (%s : %s) for files operations CONNECTED.'
-                            % (self.cage_name, serv, host, port_client)
-                        )
-                        break
-
-            if self.clients[serv][1] == False:
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind " + self.cage_name,
-                    6,
-                    message='Cage "%s". Client\'s socket server %s (%s ) '
-                    % (self.cage_name, serv, host)
-                    + "\n NOT connected with ZMQ . Connection with server failed.",
-                )
-                del self.clients[serv]
-                continue
         if len(self.clients) == 0:
             return False
         else:
             return True
 
-    # ------------------------------------------------------------
+ # ------------------------------------------------------------
 
-    # open clients ZeroMQ sockets for specified servers
+    # open clients ZeroMQ socket for threads for specified servers
     def bind_thread(self, zmq_context, Kerr):
-
-        suc_conn = False
 
         for serv in self.clients:
 
@@ -500,122 +547,99 @@ class Cage:
             host = self.server_ip[serv][:p]
             common_port = self.server_ip[serv][p + 1 :]
 
-            # 2 step connect with temp port of server - for i/o server messaging
-            self.req_id_thread += 1
-            first_request = pickle.dumps(
-                (self.client_id, "connect", self.req_id_thread)
-            )
-            # pr ( 'client %s, first_request = %s '% (cl_name, str (pickle.loads ( first_request) ) ) )
-            try:
-                self.clients[serv][0].send(first_request, zmq.DONTWAIT)
-            except zmq.ZMQError as err:
-                # send() in non-blocking mode, it raises zmq.error.Again < if err.errno == zmq.EAGAIN: > to inform you,
-                # that there's nothing that could be done with the message and you should try again later.
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind_thread " + self.cage_name,
-                    3,
-                    message='Cage thread"%s". Error during sendind first request to server %s (%s : %s ).'
-                    % (self.cage_name, serv, host, common_port)
-                    + "\n Connection with it failed.",
-                )
-                del self.clients[serv]
-                continue
+            self.req_id += 1
+            second_request = pickle.dumps(("@$&%"+self.client_id, "connect", self.req_id))
+            # pr ( 'client %s, second_request = %s '% (cl_name, str (pickle.loads ( second_request) ) ) )
 
-            first_response = ""
-            for at2 in range(ATTEMPTS_CONNECT):
-                # get client port for file processing
+            for at4 in range(ATTEMPTS_WAIT_RESPONSE):
+
                 try:
-                    event = self.clients[serv][0].poll(timeout=RESPONSE_TIMEOUT)
-                except zmq.ZMQError:
+                    self.clients[serv][0].send(second_request, zmq.DONTWAIT)
+
+                except zmq.ZMQError as err:
+                        # send() in non-blocking mode, it raises zmq.error.Again < if err.errno == zmq.EAGAIN: > to inform you,
+                        # that there's nothing that could be done with the message and you should try again later.
                     pr(
-                        'Cage thread"%s". Fist response from server %s (%s : %s) '
-                        % (self.cage_name, serv, host, common_port)
-                        + "\n temporarily not recieved. Waiting ..."
+                        'Cage "%s". Second request to server %s (%s : %s) '
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n failed. Waiting to resend ..."
                     )
-                    time.sleep(self.wait)
+                    time.sleep(RESPONSE_TIMEOUT)
+                    continue
+
                 else:
-                    first_response = pickle.loads(self.clients[serv][0].recv())
-                    # pr ( 'client %s, first_response = %s'% (cl_name, str(first_response) ) )
-                    break
-                time.sleep(self.wait)
-
-            if first_response == "":
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind_thread " + self.cage_name,
-                    4,
-                    message='Cage thread"%s". First response from server %s (%s : %s) '
-                    % (self.cage_name, serv, host, common_port)
-                    + "\n not recieved. Connection with it failed.",
-                )
-                del self.clients[serv]
-                continue
-
-            if (
-                first_response[0] != self.client_id
-                or first_response[2] != self.req_id_thread
-            ):
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind_thread " + self.cage_name,
-                    5,
-                    message='Cage thread "%s". First response from server %s (%s : %s) was with error'
-                    % (self.cage_name, serv, host, common_port)
-                    + "\n Connection with it failed.",
-                )
-                del self.clients[serv]
-                continue
-
-            status = first_response[3]
-            if status == "busy":
-                del self.clients[serv]
-                continue
-
-            elif status == "connected":
-                port_client = str(first_response[1])
-                temp_endpoint = "tcp://" + host + ":" + port_client
-                for at3 in range(ATTEMPTS_CONNECT):
+                    # get client port for file processing
                     try:
-                        temp_client = zmq_context.socket(zmq.REQ)
-                        temp_client.connect("tcp://%s:%s" % (host, port_client))
-                    except zmq.ZMQError as err:
+                        event = self.clients[serv][0].poll(timeout=WAIT_RESPONSE *ATTEMPTS_WAIT_RESPONSE)
+
+                    except zmq.ZMQError:
                         pr(
-                            'Cage thread"%s". Client\'s socket server %s (%s : %s) '
-                            % (self.cage_name, serv, host, port_client)
-                            + "\n temporarily not connected with ZMQ error: %s . Waiting ..."
-                            % err
-                        )
-                        time.sleep(ATTEMPT_TIMEOUT)
-                        continue
-                    else:
-                        self.clients[serv][2] = temp_client
-                        suc_conn = True
-                        pr(
-                            'Cage thread "%s". Client\'s socket server %s (%s : %s) for files operations CONNECTED.'
-                            % (self.cage_name, serv, host, port_client)
+                            'Cage "%s". Second response from server %s (%s : %s) '
+                            % (self.cage_id, serv, host, common_port)
+                            + "\n  not recieved. Fail server connection ..."
                         )
                         break
 
-            if self.clients[serv][2] == False:
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "bind_thread " + self.cage_name,
-                    6,
-                    message='Cage thread"%s". Client\'s socket server %s (%s ) '
-                    % (self.cage_name, serv, host)
-                    + "\n NOT connected with ZMQ . Connection with server failed.",
-                )
-                del self.clients[serv]
-                continue
-        if len(self.clients) == 0:
-            return False
-        else:
-            return True
+                    else:
+                        second_response = pickle.loads(self.clients[serv][0].recv())
+                        # pr ( 'client %s, second_response = %s'% (cl_name, str(second_response) ) )     
+                        if second_response[0] != self.client_id or second_response[2] != self.req_id:
+                            pr(
+                                'Cage "%s". second response from server %s (%s : %s) '
+                                % (self.cage_id, serv, host, common_port)
+                                + "\n  invalid. Program error. Fail server connection ..."
+                            )
+                            break
+
+                        status = second_response[3]
+
+                        if status == "connected":
+                    
+                            port2_client = str(second_response[1])
+
+                            try:
+                                temp_client = zmq_context.socket(zmq.REQ)
+                                temp_client.connect("tcp://%s:%s" % (host, port2_client))
+                            except zmq.ZMQError as err:
+                                pr(
+                                    'Cage "%s". Client\'s socket server %s (%s : %s) '
+                                    % (self.cage_id, serv, host, port2_client)
+                                    + " not connected with second client\'s port. ZMQ error: %s . Waiting ..."
+                                     % err
+                                )
+                                time.sleep(WAIT_RESPONSE)
+                                continue
+
+                            else:
+                                self.clients[serv][2] = temp_client
+                                pr(
+                                    'Cage "%s". Client\'s socket server %s (%s : %s)'
+                                    % (self.cage_id, serv, host, port2_client)
+                                    +  ' for thread files operations CONNECTED with second client\'s port.'
+                                )
+                                break                     
+                        else:
+                            pr(
+                                'Cage "%s". Client\'s socket server %s (%s : %s ) '
+                                    % (self.cage_id, serv, host, '*undefined*')
+                                    + "for thread files operations NOT connected. Waiting ..."
+                            )
+                            time.sleep(WAIT_RESPONSE)
+                continue                             
+
+            if  self.clients[serv][2] == False:
+                set_warn_int(
+                        Kerr,
+                        Mod_name,
+                        "bind_thread " + self.cage_id,
+                        1,
+                        message='Cage "%s". Server %s (%s : %s) '
+                        % (self.cage_id, serv, host, common_port)
+                        + "\n NOT connected with second port for thread file operations."
+                    )
+            continue
+
+        return True
 
     # ------------------------------------------------------------
 
@@ -654,7 +678,7 @@ class Cage:
             set_warn_int(
                 Kerr,
                 Mod_name,
-                "file_create " + self.cage_name,
+                "file_create " + self.cage_id,
                 1,
                 message="File  %s  already exist and not opened." % path,
             )
@@ -665,7 +689,7 @@ class Cage:
             set_warn_int(
                 Kerr,
                 Mod_name,
-                "file_create " + self.cage_name,
+                "file_create " + self.cage_id,
                 2,
                 message="File  %s  already exist and opened by this client." % path,
             )
@@ -676,7 +700,7 @@ class Cage:
             set_warn_int(
                 Kerr,
                 Mod_name,
-                "file_create " + self.cage_name,
+                "file_create " + self.cage_id,
                 2,
                 message='File  %s  already exist and opened by another client with mode = " %s ".'
                 % (path, rc),
@@ -688,14 +712,14 @@ class Cage:
 
         else:  # if rc == False
             if (
-                kerr[0][3] == "f_create " + self.cage_name
+                kerr[0][3] == "f_create " + self.cage_id
             ):  # Cage client error (generated by cage_channel.f_create)
-                if __debug__:
+                if CAGE_DEBUG:
                     Kerr += kerr
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "file_create " + self.cage_name,
+                    "file_create " + self.cage_id,
                     3,
                     message="Internal error in cage before file  %s  creation on server %s. \n"
                     % (path, server),
@@ -705,15 +729,15 @@ class Cage:
                 #  3:  file path not specified
                 #  4:  connection problem
 
-            elif kerr[0][3] == "join " + self.cage_name and kerr[0][4] in (
+            elif kerr[0][3] == "join " + self.cage_id and kerr[0][4] in (
                 "5",
             ):  #  connection error   (generated by cage.join)
-                if __debug__:
+                if CAGE_DEBUG:
                     Kerr += kerr
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "file_create " + self.cage_name,
+                    "file_create " + self.cage_id,
                     4,
                     message='Connection problem with server "%s" .' % server,
                 )
@@ -722,12 +746,12 @@ class Cage:
                 "4",
                 "5",
             ):  #  system file OS error on server    (generated by Cage Server)
-                if __debug__:
+                if CAGE_DEBUG:
                     Kerr += kerr
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "file_create " + self.cage_name,
+                    "file_create " + self.cage_id,
                     5,
                     message='OS file system error in file server "%s" . File possibly not created.'
                     % server,
@@ -735,12 +759,12 @@ class Cage:
                 #  4:  file OS open error
                 #  5:  file OS close error
             else:  #  internal error
-                if __debug__:
+                if CAGE_DEBUG:
                     Kerr += kerr
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "file_create " + self.cage_name,
+                    "file_create " + self.cage_id,
                     6,
                     message="Error during file  %s  creation. rc = %s\n"
                     % (path, str(rc)),
@@ -750,531 +774,74 @@ class Cage:
     # ------------------------------------------------------------
 
     # open file
+
     def open(self, server="default_server_and_main_port", path="", Kerr=[], mod="wm"):
-        # mod =     rm  - open read/close with monopoly for channel owner
-        #           wm  - open read/write/close with monopoly for channel owner
-        #           rs  - open read/close and only read for other clients
-        #           ws  - open read/write/close and only read for other clients
-        #           sp  - need special external conditions for open and access
-        #                 (attach existing channel for other clients)
-        kerr = []
-        new_channel = ch_open(self, server, path, kerr, mod)
-        if new_channel < 0:
-            # file already opened by this client
-            if __debug__:
-                Kerr += kerr
-            set_warn_int(
-                Kerr,
-                Mod_name,
-                "open " + self.cage_name,
-                8,
-                message="File  %s  already opened by this client." % (path),
-            )
 
-            #time.sleep(0.1)
-
-            return -new_channel
-
-        elif new_channel == False:
-            if kerr[0][3] == "open_f" and kerr[0][4] in (
-                "2",
-                "4",
-                "5",
-            ):  #   error    (generated by Cage Server)
-                #  2:  file already opened by this client, but in another mode
-                #  4:  exceptional status can not be set for file already opened with mod = "ws"
-                #  5:  file already opened by another client and can not be opened with mode requested
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "open " + self.cage_name,
-                    1,
-                    message="File  %s  can not be opened with mode  %s. Change mode."
-                    % (path, mode),
-                )
-            if (
-                kerr[0][3] == "ch_open " + self.cage_name
-            ):  # Cage server error (generated by cage_channel.ch_open)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "open " + self.cage_name,
-                    2,
-                    message="Cage server  %s  error during file  %s  opening. \n"
-                    % (server, path),
-                )
-                #  kerr[0][4]  codes:           1:  server with specified name is not accessible
-                #  2:  server with specified name is not connected
-                #  3:  file path not specified
-                #  4:  connection problem
-            elif kerr[0][3] == "join " + self.cage_name and kerr[0][4] in (
-                "5",
-            ):  #  error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_create " + self.cage_name,
-                    3,
-                    message='Connection problem with server "%s" .' % server,
-                )
-            elif kerr[0][3] == "open_f" and kerr[0][4] in (
-                "1",
-                "3",
-                "6",
-                "7",
-            ):  #   error   (generated by Cage Server)
-                #  1:  file already opened with exceptional status. It is blocked now.
-                #  3:  file already opened with monopoly by another client. It is blocked.
-                #  6:  Max number of files exceeded
-                #  7:  Max number of opened files exceeded
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "open " + self.cage_name,
-                    4,
-                    message="File  %s  can not be opened - busy or blocked. Wait."
-                    % path,
-                )
-            elif kerr[0][3] == "open_f" and kerr[0][4] in (
-                "8",
-            ):  #   error   (generated by Cage Server)
-                #  8: file OS open error
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "open " + self.cage_name,
-                    5,
-                    message="OS system file  %s  open error on server." % path,
-                )
-            elif kerr[0][3] == "open_f" and kerr[0][4] in (
-                "9",
-            ):  #   error   (generated by Cage Server)
-                #  9:  file not found
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "open " + self.cage_name,
-                    6,
-                    message="File  %s  not found on server." % path,
-                )
-            else:  #  internal error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "open " + self.cage_name,
-                    7,
-                    message="Cage internal error during file  %s  opening. \n" % path,
-                )
-            return False
-
-        time.sleep(0.01)
-
-        return new_channel
-
-    # ------------------------------------------------------------
-
-    def file_remove(self, server="default_server_and_main_port", path="", Kerr=[]):
-
-        kerr = []
-        rc = f_remove(self, server, path, kerr)
-        if rc == 1:
-
-            time.sleep(0.1)
-
-            return True
-        # errors
-        elif (
-            rc == -1
-        ):  #  file was only "virtually" closed for this client,  but not deleted on server
-            if __debug__:
-                Kerr += kerr
+        if mod not in {"rm", "rs", "wm", "ws", "sp" }:
             set_err_int(
-                Kerr,
-                Mod_name,
-                "file_remove " + self.cage_name,
-                1,
-                message="Channel of the file %s  was closed for this client, \
-                         but file was not deleted on server = $s."
-                % (path, server),
+                                Kerr,
+                                Mod_name,
+                                "open " + self.cage_id,
+                                1,
+                                message='Attempt open file with invalid mode "%s".'
+                                % mod
             )
             return False
-        elif rc == 0:
-            if (
-                kerr[0][3] == "f_remove " + self.cage_name
-            ):  # Cage server error (generated by cage_channel.f_remove)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_remove " + self.cage_name,
-                    2,
-                    message="Cage server  %s  error during file  %s  deletion. \n"
-                    % (server, path),
-                )
-                #  kerr[0][4]  codes:           1:  server with specified name is not accessible
-                #  2:  server with specified name is not connected
-                #  3:  file path not specified
-                #  4:  connection problem
-            elif kerr[0][3] == "join " + self.cage_name and kerr[0][4] in (
-                "5",
-            ):  #  connection error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_remove " + self.cage_name,
-                    3,
-                    message='Connection problem with server "%s" .' % server,
-                )
-            elif kerr[0][3] == "del_f" and kerr[0][4] in (
-                "1",
-            ):  #  error   (generated by Cage Server)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_remove " + self.cage_name,
-                    4,
-                    message='OS file system error in server "%s" . File %s possibly not removed.'
-                    % (server, path),
-                )
-                #  1:  : file OS delete error
-            elif kerr[0][3] == "del_f" and kerr[0][4] in (
-                "2",
-            ):  #  error   (generated by Cage Server)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_remove " + self.cage_name,
-                    5,
-                    message="File  %s  not found." % path,
-                )
-                #  2:  file not found
-            else:  #  internal error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_remove " + self.cage_name,
-                    6,
-                    message="Cage internal error during file  %s  deletion. \n" % path
-                    + "Possible connection/timeout problem.",
-                )
-            return False
 
+        if self.cage_id !=  self.client_id:
 
-    # --------------------------------------------------------
+            if     self.payload [ 'permission'] == 'low' and \
+                        mod != "rs" or\
+                    self.payload [ 'permission'] == 'standard' and \
+                        mod in {  "rm", "wm", "sp" }  or\
+                    self.payload [ 'permission'] == 'high' and \
+                        mode == "sp":
+ 
+                                #                 rm  - open read/close with monopoly for channel owner
+                                #                 wm  - open read/write/close with monopoly for channel owner
+                                #                 rs  - open read/close and only read for other clients
+                                #                 ws  - open read/write/close and only read for other clients
+                                #                 sp  - need special external conditions for open and access
+                                #                         (attach existing channel for other clients)
 
-    def file_rename(
-        self, server="default_server_and_main_port", path="", new_name="", Kerr=[]
-    ):
-
-        kerr = []
-        rc = f_rename(self, server, path, new_name, kerr)
-        if rc == -1:  #  file renamed
-    
-            time.sleep(0.01)
-
-            return True
-
-        elif rc == -2:
-            if __debug__:
-                Kerr += kerr
-            set_warn_int(
-                Kerr,
-                Mod_name,
-                "file_rename " + self.cage_name,
-                1,
-                message="File %s  not renamed, because already exist file with name %s."
-                % (path, new_name),
-            )
-            return -2
-        elif rc == -3:
-            if __debug__:
-                Kerr += kerr
-            set_warn_int(
-                Kerr,
-                Mod_name,
-                "file_rename " + self.cage_name,
-                2,
-                message="File %s  not renamed, because in use by other clients." % path,
-            )
-            return -3
-        elif rc == False:
-            if (
-                kerr[0][3] == "f_rename " + self.cage_name
-            ):  # Cage server error (generated by cage_channel.f_create)
-                if __debug__:
-                    Kerr += kerr
                 set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_rename " + self.cage_name,
-                    3,
-                    message="Cage server  %s  error during file  %s  renaming. \n"
-                    % (server, path),
+                                Kerr,
+                                Mod_name,
+                                "open " + self.cage_id,
+                                2,
+                                message='Attempt open file with mode "%s"  invalid by status "%s".'
+                                % (mod, self.payload [ 'permission']),
                 )
-                #  kerr[0][4]  codes:           1:  server with specified name is not accessible
-                #  2:  server with specified name is not connected
-                #  3:  file path not specified
-                #  4:  connection problem
-            elif kerr[0][3] == "join " + self.cage_name and kerr[0][4] in (
-                "5",
-            ):  #  error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_rename " + self.cage_name,
-                    4,
-                    message='Connection problem with server "%s" .' % server,
-                )
-            elif kerr[0][3] == "ren_f" and kerr[0][4] in (
-                "1",
-            ):  #  error   (generated by Cage Server)
-                #  1:  : file OS rename error  ( may be alredy exist file with new_name )
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_rename " + self.cage_name,
-                    5,
-                    message="OS system file  %s  rename error on server." % path,
-                )
-            elif kerr[0][3] == "ren_f" and kerr[0][4] in (
-                "2",
-            ):  #  error   (generated by Cage Server)
-                #  2:  file not found
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_rename " + self.cage_name,
-                    6,
-                    message="File  %s  not found." % path,
-                )
-            else:  #  internal error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_rename " + self.cage_name,
-                    7,
-                    message="Cage internal error during file  %s  deletion. \n" % path
-                    + "Possible connection/timeout problem.",
-                )
-            return False
-
-        time.sleep(0.01)
-
-        return True
+                return False
+        """
+        if WRITE_THREAD and self.payload['permission'] != 'low'  and mod [0] == "w" or mod == "sp":
+            file_for_write = f_open(self, server, path, Kerr, "w"+mod[1])
+            if  file_for_write == False:
+                return False
+            file_for_read =  f_open(self, server, path, Kerr, "rs")
+            if  file_for_read == False:
+                return False
+            return file_for_write
+        
+        else:
+        """
+        
+        return f_open(self, server, path, Kerr, mod)
 
     # --------------------------------------------------------
 
     def close(self, fchannel=-1, Kerr=[]):
 
-        kerr = []
-        server = self.cage_ch[fchannel][0]
+        return f_close(self, fchannel, Kerr)
 
-        rc = put_p(self, fchannel, kerr)
-
-        if rc == False:
-            # pr(' Cage.close -1-  Kerr = '+str(Kerr) )
-            if (
-                kerr[0][3] == "put_p " + self.cage_name and kerr[0][4] == "1"
-            ):  # Channel number is wrong
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    1,
-                    message="Channel number " + str(fchannel) + " is wrong.",
-                )
-            elif kerr[0][3] == "put_p " + self.cage_name and kerr[0][4] in (
-                "2",
-                "3",
-                "4",
-                "5",
-                "6",
-                "7",
-                "8",
-            ):  # Error in put page
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    2,
-                    message="Error during channel  %d  closing no. $s  in put_p. "
-                    % (fchannel, kerr[0][4]),
-                )
-            return False
-
-        for page in range(self.numpages):
-
-            if self.binout[page]["nf"] == fchannel:
-
-                # delete element from dict.
-                if (self.binout[page]["nbls"], fchannel) in self.hash2nat:
-                    del self.hash2nat[(self.binout[page]["nbls"], fchannel)]
-                else:  #  internal error - in dict. no element for pushing page
-                    set_err_int(
-                        Kerr,
-                        Mod_name,
-                        "close " + self.cage_name,
-                        3,
-                        message="There is no page being pushed out in the dictionary.",
-                    )
-                    return False  # putpage failed
-
-                self.binout[page]["nbls"] = -1
-                self.binout[page]["nf"] = -1
-                self.binout[page]["prmod"] = False
-                self.binout[page]["kobs"] = 0
-                self.binout[page]["time"] = time.time()
-
-        closed_channel = ch_close(self, fchannel, kerr)
-
-        if closed_channel == True:
-            set_warn_int(
-                Kerr,
-                Mod_name,
-                "close " + self.cage_name,
-                9,
-                message="Channel %d was closed virtually for cage, not physically on server."
-                % fchannel,
-            )
-
-           # time.sleep(0.01)
-
-            return True  # file was closed virtually (only for this cage
-            # and remains opened for other clients of file server)
-
-        elif closed_channel == False:
-            # pr(' Cage.close -2-  Kerr = '+str(Kerr) )
-            if (
-                kerr[0][3] == "ch_close " + self.cage_name and kerr[0][4] == "1"
-            ):  # Channel number is wrong
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    3,
-                    message="Channel number " + str(fchannel) + " is wrong.",
-                )
+        """
+        if not(WRITE_THREAD and self.payload['permission'] != 'low' ):
+            return f_close(self, fchannel, Kerr)
+        else:
+            if  f_close(self, fchannel, Kerr) == False:
                 return False
-            elif (
-                kerr[0][3] == "ch_close " + self.cage_name
-            ):  # Cage server error (generated by cage_channel.ch_open)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    4,
-                    message="Cage server  %s  error during  file channel  %d  closing. \n"
-                    % (server, fchannel),
-                )
-                #  kerr[0][4]  codes:           2:  server with specified name is not connected
-                #  3:  connection problem
-                return False
-            elif kerr[0][3] == "join " + self.cage_name and kerr[0][4] in (
-                "5",
-            ):  #  error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "file_create " + self.cage_name,
-                    5,
-                    message='Connection problem with server "%s" .' % server,
-                )
-                return False
-            elif kerr[0][3] == "close_f" and kerr[0][4] in (
-                "1",
-                "2",
-                "3",
-                "4",
-            ):  #   error   (generated by Cage Server)
-                #  1:  channel on server not exist
-                #  2:  File with exceptional status can not closed on server
-                #  3:  Channel number is wrong
-                #  4:  Channel number is wrong
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    6,
-                    message="File channel  %s  not closed due to server %s error."
-                    % (fchannel, server),
-                )
-            elif kerr[0][3] == "close_f" and kerr[0][4] in (
-                "5",
-            ):  #   error   (generated by Cage Server)
-                #  5: file OS close error
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    7,
-                    message="OS system file channel %s  close error on server %s."
-                    % (fchannel, server),
-                )
-            else:  #  internal error   (generated by cage.join)
-                if __debug__:
-                    Kerr += kerr
-                set_err_int(
-                    Kerr,
-                    Mod_name,
-                    "close " + self.cage_name,
-                    8,
-                    message="Cage internal error during file channel %s  opening on server %s. \n"
-                    % (fchannel, server)
-                    + "Possible connection/timeout problem.",
-                )
-            return False
-
-        else:  # file was physically closed on server
-
-            time.sleep(0.1)
-
-            return True
-
+            return f_close(self, fchannel+1, Kerr)
+        """
     # --------------------------------------------------------
 
     def is_active(self, fchannel=-1, Kerr=[], get_f_status=False):
@@ -1301,15 +868,237 @@ class Cage:
     def stat(self, Kerr):
         return statis(self, Kerr)
 
+    # ------------------------------------------------------------
+
+
+    def file_remove(self, server="default_server_and_main_port", path="", Kerr=[]):
+
+        kerr = []
+        rc = f_remove(self, server, path, kerr)
+        if rc == 1:
+
+            time.sleep(0.1)
+
+            return True
+        # errors
+        elif (
+            rc == -1
+        ):  #  file was only "virtually" closed for this client,  but not deleted on server
+            if CAGE_DEBUG:
+                Kerr += kerr
+            set_err_int(
+                Kerr,
+                Mod_name,
+                "file_remove " + self.cage_id,
+                1,
+                message="Channel of the file %s  was closed for this client, \
+                         but file was not deleted on server = $s."
+                % (path, server),
+            )
+            return False
+        elif rc == 0:
+            if (
+                kerr[0][3] == "f_remove " + self.cage_id
+            ):  # Cage server error (generated by cage_channel.f_remove)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_remove " + self.cage_id,
+                    2,
+                    message="Cage server  %s  error during file  %s  deletion. \n"
+                    % (server, path),
+                )
+                #  kerr[0][4]  codes:           1:  server with specified name is not accessible
+                #  2:  server with specified name is not connected
+                #  3:  file path not specified
+                #  4:  connection problem
+            elif kerr[0][3] == "join " + self.cage_id and kerr[0][4] in (
+                "5",
+            ):  #  connection error   (generated by cage.join)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_remove " + self.cage_id,
+                    3,
+                    message='Connection problem with server "%s" .' % server,
+                )
+            elif kerr[0][3] == "del_f" and kerr[0][4] in (
+                "1",
+            ):  #  error   (generated by Cage Server)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_remove " + self.cage_id,
+                    4,
+                    message='OS file system error in server "%s" . File %s possibly not removed.'
+                    % (server, path),
+                )
+                #  1:  : file OS delete error
+            elif kerr[0][3] == "del_f" and kerr[0][4] in (
+                "2",
+            ):  #  error   (generated by Cage Server)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_warn_int(
+                    Kerr,
+                    Mod_name,
+                    "file_remove " + self.cage_id,
+                    5,
+                    message="File  %s  not found." % path,
+                )
+                #  2:  file not found
+            else:  #  internal error   (generated by cage.join)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_remove " + self.cage_id,
+                    6,
+                    message="Cage internal error during file  %s  deletion. \n" % path
+                    + "Possible connection/timeout problem.",
+                )
+            return False
+
+
+    # --------------------------------------------------------
+
+    def file_rename(
+        self, server="default_server_and_main_port", path="", new_name="", Kerr=[]
+    ):
+
+        cage_id_and_JWT = self.client_id.encode('utf-8')
+        self.cage_id= self.client_id
+
+        pos_splitter=cage_id_and_JWT.find( SPLITTER)
+
+        if pos_splitter > -1 and len(cage_id_and_JWT) > pos_splitter +4:
+            jwtoken = cage_id_and_JWT[ (pos_splitter+4): ].decode('utf-8')
+            if pos_splitter == 0:
+                self.cage_id= jwtoken.decode('utf-8')
+            else:
+                self.cage_id= cage_id_and_JWT[ : pos_splitter].decode('utf-8')
+
+        kerr = []
+        rc = f_rename(self, server, path, new_name, kerr)
+        if rc == -1:  #  file renamed
+    
+            time.sleep(0.01)
+
+            return True
+
+        elif rc == -2:
+            if CAGE_DEBUG:
+                Kerr += kerr
+            set_warn_int(
+                Kerr,
+                Mod_name,
+                "file_rename " + self.cage_id,
+                1,
+                message="File %s  not renamed, because already exist file with name %s."
+                % (path, new_name),
+            )
+            return -2
+        elif rc == -3:
+            if CAGE_DEBUG:
+                Kerr += kerr
+            set_warn_int(
+                Kerr,
+                Mod_name,
+                "file_rename " + self.cage_id,
+                2,
+                message="File %s  not renamed, because in use by other clients." % path,
+            )
+            return -3
+        elif rc == False:
+            if (
+                kerr[0][3] == "f_rename " + self.cage_id
+            ):  # Cage server error (generated by cage_channel.f_create)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_rename " + self.cage_id,
+                    3,
+                    message="Cage server  %s  error during file  %s  renaming. \n"
+                    % (server, path),
+                )
+                #  kerr[0][4]  codes:           1:  server with specified name is not accessible
+                #  2:  server with specified name is not connected
+                #  3:  file path not specified
+                #  4:  connection problem
+            elif kerr[0][3] == "join " + self.cage_id and kerr[0][4] in (
+                "5",
+            ):  #  error   (generated by cage.join)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_rename " + self.cage_id,
+                    4,
+                    message='Connection problem with server "%s" .' % server,
+                )
+            elif kerr[0][3] == "ren_f" and kerr[0][4] in (
+                "1",
+            ):  #  error   (generated by Cage Server)
+                #  1:  : file OS rename error  ( may be alredy exist file with new_name )
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_rename " + self.cage_id,
+                    5,
+                    message="OS system file  %s  rename error on server." % path,
+                )
+            elif kerr[0][3] == "ren_f" and kerr[0][4] in (
+                "2",
+            ):  #  error   (generated by Cage Server)
+                #  2:  file not found
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_rename " + self.cage_id,
+                    6,
+                    message="File  %s  not found." % path,
+                )
+            else:  #  internal error   (generated by cage.join)
+                if CAGE_DEBUG:
+                    Kerr += kerr
+                set_err_int(
+                    Kerr,
+                    Mod_name,
+                    "file_rename " + self.cage_id,
+                    7,
+                    message="Cage internal error during file  %s  deletion. \n" % path
+                    + "Possible connection/timeout problem.",
+                )
+            return False
+
+        time.sleep(0.01)
+
+        return True
+
     # --------------------------------------------------------
 
     def __del__(self):
+
         # pr (self.cage_ch)
         # cage_ch[channel] = (server, kw, mod)
         channels = list(self.cage_ch.keys())
         for nf in channels:
             self.close(nf)
-            # pr ('__del__ Cage "%s". Files closed.'% (self.cage_name )     )
+            # pr ('__del__ Cage "%s". Files closed.'% (self.cage_id )     )
         del self.cage_ch
         for serv in self.clients:  # delete all client's sockets and close files
 
@@ -1326,14 +1115,14 @@ class Cage:
                 try:  # 1 step: try send order to subproces File io server disconnect with this client
                     self.clients[serv][1].send(req)
                 except zmq.ZMQError as err:
-                    # pr ('__del__ Cage "%s". ZMQ temp socket on server "%s" can NOT accept order'% (self.cage_name, serv) + \
+                    # pr ('__del__ Cage "%s". ZMQ temp socket on server "%s" can NOT accept order'% (self.cage_id, serv) + \
                     # '\n to terminate threads in file server. \n Code = %s.'% str(err) )
                     pass
                 else:
                     resp = self.join(request, serv, [])
                     if resp:
                         # pr ('__del__ Cage "%s". All cage files on server "%s" ( %s ) closed and threads stopped.'% \
-                        #  (self.cage_name, serv, self.server_ip[serv]))
+                        #  (self.cage_id, serv, self.server_ip[serv]))
                         self.clients[serv][0].close()
                         self.clients[serv][1].close()
                         self.clients[serv] = [False, False]
@@ -1348,7 +1137,7 @@ class Cage:
                 except zmq.ZMQError as err:
                     # cerr2 = True
                     # pr ('__del__ Cage "%s". ZMQ common socket on server "%s" can NOT accept order'% \
-                    # (self.cage_name, serv) + \
+                    # (self.cage_id, serv) + \
                     #'\n to terminate threads in file server. \n Code = %s.'% str(err) )
                     self.clients[serv][0].close()
                     self.clients[serv][1].close()
@@ -1365,15 +1154,15 @@ class Cage:
                         # server ended service not normally but good
                         # pr ( 'client %s, last_response = %s'% (self.client_id, str(last_response) ) )
                         # pr ('__del__  Cage "%s". Server %s (%s : ---- ) '% \
-                        # (self.cage_name, serv, host) + \
+                        # (self.cage_id, serv, host) + \
                         #'gave answer: %s .'% last_response[1] )
                         if last_response[1] == "disconnected":
                             # pr ('__del__ Cage "%s". Common and temp ZMQ sockets of server %s (%s) DISCONNECTED.'% \
-                            # (self.cage_name, serv, self.server_ip[serv]) )
+                            # (self.cage_id, serv, self.server_ip[serv]) )
                             pass
                     else:
                         # pr ('__del__  Cage "%s". Common server %s (%s : ---- ) '% \
-                        # (self.cage_name, serv, host) + \
+                        # (self.cage_id, serv, host) + \
                         # ' not return info about disconnecting.')
                         # server ended service absolutely not normally
                         pass
@@ -1402,13 +1191,13 @@ class Cage:
 
         if not self.asleep:
             pr(
-                'Cage "%s" of client_id = %s DELETED.'
-                % (self.cage_name, self.client_id)
+                'Cage "%s"  DELETED.'
+                % (self.cage_id,)
             )
         else:
             pr(
-                'Cage "%s" of client_id = %s FELL ASLEEP.'
-                % (self.cage_name, self.client_id)
+                'Cage "%s" FELL ASLEEP.'
+                % (self.cage_id,)
             )
 
     # ------------------------------------------------------------
@@ -1418,13 +1207,14 @@ class Cage:
 
         if not push_p(self, Kerr):
             return False
+
         try:
-            Cache_hd = open(self.cache_file + "_" + self.cage_name + ".cg", "wb")
+            Cache_hd = open(self.cache_file + "_" + self.cage_id + ".cg", "wb")
         except OSError as err:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "sleep " + self.cage_name,
+                "sleep " + self.cage_id,
                 1,
                 message="Cache file not opened with err :" + str(err),
             )
@@ -1455,6 +1245,8 @@ class Cage:
                     self.client_id,
                     self.cage_ch,
                     self.hash2nat,
+                    self.cage_id,
+                    self.payload,
                 )
             )
             # pr (str ( pickle.loads (mem) ) )
@@ -1462,7 +1254,7 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "sleep " + self.cage_name,
+                "sleep " + self.cage_id,
                 2,
                 message="Memory not pickled with err :" + str(err),
             )
@@ -1473,7 +1265,7 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "sleep " + self.cage_name,
+                "sleep " + self.cage_id,
                 3,
                 message="Cache file not upload with err :" + str(err),
             )
@@ -1484,7 +1276,7 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "sleep " + self.cage_name,
+                "sleep " + self.cage_id,
                 4,
                 message="Cache file not closed with err :" + str(err),
             )
@@ -1495,15 +1287,42 @@ class Cage:
     # ------------------------------------------------------------
 
     # recover cage memory from file - first step of cage building from file
-    def wakeup1(self, Kerr=[]):
+    def wakeup1(self, Kerr=[]):         
+        
+        if self.cage_name == "":
+                self.client_id = str(self.obj_id) + str(
+                    self.pr_create
+                )  # secure id. for access to servers from
+                # cage instance
+        else:
+                self.client_id = self.cage_name            
+
+        cage_id_and_JWT = self.client_id.encode('utf-8')
+        pos_splitter=cage_id_and_JWT.find( SPLITTER)
+        jwtoken= None
+        if pos_splitter > -1 and len(cage_id_and_JWT) > pos_splitter +4:
+            jwtoken = cage_id_and_JWT[ (pos_splitter+4): ].decode('utf-8')
+            try:
+                self.payload = jwt.decode(jwtoken, algorithm='HS256', verify=False)
+            except InvalidTokenError as err:
+                    raise CageERR(
+                        "03 CageERR   Cage name contains invalid JW token, error: %s" % err
+                    )
+            if pos_splitter == 0:
+                self.cage_id= jwtoken.decode('utf-8')
+            else:
+                self.cage_id= cage_id_and_JWT[ : pos_splitter].decode('utf-8')
+        else:
+            self.cage_id=  self.client_id
+            self.payload = None
 
         try:
-            Cache_hd = open(self.cache_file + "_" + self.cage_name + ".cg", "rb")
+            Cache_hd = open(self.cache_file + "_" + self.cage_id + ".cg", "rb")
         except OSError as err:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "wakeup1 " + self.cage_name,
+                "wakeup1 " + self.cage_id,
                 1,
                 message="Cache file not opened with err :" + str(err),
             )
@@ -1514,7 +1333,7 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "wakeup1 " + self.cage_name,
+                "wakeup1 " + self.cage_id,
                 2,
                 message="Cache file not download with err :" + str(err),
             )
@@ -1525,7 +1344,7 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "wakeup1 " + self.cage_name,
+                "wakeup1 " + self.cage_id,
                 3,
                 message="Cache file not closed with err :" + str(err),
             )
@@ -1538,7 +1357,7 @@ class Cage:
             set_err_int(
                 Kerr,
                 Mod_name,
-                "wakeup1 " + self.cage_name,
+                "wakeup1 " + self.cage_id,
                 4,
                 message="Memory not pickled with err :" + str(err),
             )
@@ -1587,6 +1406,8 @@ class Cage:
         self.client_id = memory[17]
         self.cage_ch = memory[18]
         self.hash2nat = memory[19]
+        self.cage_id = memory[20]
+        self.payload = memory[21]
 
         return True
 
@@ -1611,7 +1432,7 @@ class Cage:
                 set_err_int(
                     Kerr,
                     Mod_name,
-                    "wakeup2 " + self.cage_name,
+                    "wakeup2 " + self.cage_id,
                     1,
                     message='ZMQ temp socket on server "%s" can NOT accept order with command "%s".\n Code = %s.'
                     % (server, request[0], str(err)),
@@ -1631,6 +1452,7 @@ class Cage:
 
     # recieve response from server for all operations
     def join(self, req="", server="default_server_and_main_port", Kerr=[]):
+
         """
         <------- w
         --------> b"\x0F" * 4
@@ -1666,11 +1488,13 @@ class Cage:
                 answer = self.clients[server][1].recv()
 
                 if answer == b"\xFF" * 4:
+                    time.sleep(1)
                     resend = pickle.dumps(req)
                     self.clients[server][1].send(resend)
                     continue
 
                 if answer[:4] == b"\x00" * 4:
+                    time.sleep(1)
                     respond = pickle.loads(answer[4:])
                     kerr = pickle.loads(respond[4])
                     serv = kerr[0]
@@ -1680,7 +1504,7 @@ class Cage:
                     set_err_int(
                         Kerr,
                         Mod_name,
-                        "join " + self.cage_name,
+                        "join " + self.cage_id,
                         1,
                         message="Cage client_id.: "
                         + self.client_id
@@ -1705,7 +1529,7 @@ class Cage:
                     set_err_int(
                         Kerr,
                         Mod_name,
-                        "join " + self.cage_name,
+                        "join " + self.cage_id,
                         2,
                         message="Respond Id "
                         + str(req_id)
@@ -1749,7 +1573,7 @@ class Cage:
                         set_warn_int(
                             Kerr,
                             Mod_name,
-                            "join " + self.cage_name,
+                            "join " + self.cage_id,
                             6,
                             message="Cage client_id.: "
                             + self.client_id
@@ -1760,7 +1584,7 @@ class Cage:
                         set_err_int(
                             Kerr,
                             Mod_name,
-                            "join " + self.cage_name,
+                            "join " + self.cage_id,
                             3,
                             message="Cage client_id.: "
                             + self.client_id
@@ -1773,7 +1597,7 @@ class Cage:
                     set_err_int(
                         Kerr,
                         Mod_name,
-                        "join " + self.cage_name,
+                        "join " + self.cage_id,
                         4,
                         message="Cage client_id.: "
                         + str(self.client_id)
@@ -1787,7 +1611,7 @@ class Cage:
         set_err_int(
             Kerr,
             Mod_name,
-            "join " + self.cage_name,
+            "join " + self.cage_id,
             5,
             message="Cage client_id.: "
             + str(self.client_id)
